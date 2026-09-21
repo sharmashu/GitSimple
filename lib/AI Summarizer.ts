@@ -14,7 +14,7 @@ export async function generateBriefSummary(diffText: string): Promise<string> {
 
   try {
     const interaction = await client.interactions.create({
-      model: "gemini-1.5-flash-8b",
+      model: "gemini-3.5-flash",
       input: prompt,
       system_instruction: "You are a developer writing a clean, concise, technical git commit message. Use neat bullet points and formatting."
     });
@@ -31,7 +31,7 @@ export async function generateDetailedExplanation(diffText: string): Promise<str
 
   try {
     const interaction = await client.interactions.create({
-      model: "gemini-1.5-flash-8b",
+      model: "gemini-3.5-flash",
       input: prompt,
       system_instruction: "You are an expert software architect providing comprehensive, neatly formatted, professional technical reports of codebase changes."
     });
@@ -64,7 +64,7 @@ Here is the context diff:\n\n${truncatedDiff}`;
     }
 
     const interaction = await client.interactions.create({
-      model: "gemini-1.5-flash-8b",
+      model: "gemini-3.5-flash",
       input: fullInput,
       system_instruction: systemPrompt
     });
@@ -94,13 +94,13 @@ ${truncatedDiff}`;
 
   try {
     const interaction = await client.interactions.create({
-      model: "gemini-1.5-flash-8b",
+      model: "gemini-3.5-flash",
       input: prompt,
       config: {
         responseMimeType: "application/json"
       }
     });
-    
+
     return JSON.parse(interaction.output_text || "{}");
   } catch (error: any) {
     console.error("Gemini Error generating structured analysis:", error);
