@@ -112,20 +112,10 @@ export default async function TimelinePage({ searchParams }: { searchParams: Sea
         ) : (
           <>
             {/* Stats */}
-            <section className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <section className="grid grid-cols-2 gap-3">
               <div className="bg-zinc-900/60 border border-zinc-800 rounded-xl p-4">
                 <p className="text-xs uppercase tracking-wide text-zinc-500">Commits analysed</p>
                 <p className="text-2xl font-bold text-white mt-1">{statsRows.length}</p>
-              </div>
-              <div className="bg-zinc-900/60 border border-zinc-800 rounded-xl p-4">
-                <p className="text-xs uppercase tracking-wide text-zinc-500 flex items-center gap-1">
-                  <AlertTriangle className="w-3 h-3" /> Breaking
-                </p>
-                <p className="text-2xl font-bold text-red-400 mt-1">{impactCounts.Breaking || 0}</p>
-              </div>
-              <div className="bg-zinc-900/60 border border-zinc-800 rounded-xl p-4">
-                <p className="text-xs uppercase tracking-wide text-zinc-500">Security</p>
-                <p className="text-2xl font-bold text-orange-400 mt-1">{impactCounts.Security || 0}</p>
               </div>
               <div className="bg-zinc-900/60 border border-zinc-800 rounded-xl p-4">
                 <p className="text-xs uppercase tracking-wide text-zinc-500 flex items-center gap-1">

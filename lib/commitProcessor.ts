@@ -141,34 +141,37 @@ async function indexCommitInner(opts: {
     return { status: "failed", commit: null, error: `AI: ${(e as any)?.message || "analysis failed"}` };
   }
 
-  const { data: inserted, error: insertError } = await admin
-    .from("commits")
-    .insert({
-      repo_id: opts.repo.id,
-      commit_sha: details.sha,
-      short_sha: details.sha.substring(0, 7),
-      branch: opts.branch || opts.repo.default_branch || "main",
-      author_name: details.authorName,
-      author_email: details.authorEmail,
-      author_avatar: details.authorAvatar,
-      message: details.message,
-      title,
-      brief_summary: analysis.brief_summary,
-      executive_summary: analysis.executive_summary,
-      architectural_impact: analysis.architectural_impact,
-      breaking_changes: analysis.breaking_changes,
-      affected_domains: analysis.affected_domains,
-      impact_level: analysis.impact_level,
-      stats: { files_changed: details.files.length, additions: details.additions, deletions: details.deletions },
-      files: details.files.map((f) => ({ filename: f.filename, status: f.status, additions: f.additions, deletions: f.deletions })),
-      file_paths: filePaths,
-      related_shas: related.map((r) => r.sha),
-      diff_excerpt: prepareDiff(diff),
-      analysis_model: model,
-      committed_at: details.date,
-    })
-    .select("*")
-    .single();
+  const commitRow: Record<string, unknown> = {
+    repo_id: opts.repo.id,
+    commit_sha: details.sha,
+    short_sha: details.sha.substring(0, 7),
+    branch: opts.branch || opts.repo.default_branch || "main",
+    author_name: details.authorName,
+    author_email: details.authorEmail,
+    author_avatar: details.authorAvatar,
+    author_login: details.authorLogin || null,
+    message: details.message,
+    title,
+    brief_summary: analysis.brief_summary,
+    executive_summary: analysis.executive_summary,
+    architectural_impact: analysis.architectural_impact,
+    breaking_changes: analysis.breaking_changes,
+    affected_domains: analysis.affected_domains,
+    impact_level: analysis.impact_level,
+    stats: { files_changed: details.files.length, additions: details.additions, deletions: details.deletions },
+    files: details.files.map((f) => ({ filename: f.filename, status: f.status, additions: f.additions, deletions: f.deletions })),
+    file_paths: filePaths,
+    related_shas: related.map((r) => r.sha),
+    diff_excerpt: prepareDiff(diff),
+    analysis_model: model,
+    committed_at: details.date,
+  };
+  let { data: inserted, error: insertError } = await admin.from("commits").insert(commitRow).select("*").single();
+  // Migration 004 not applied yet: store the commit without the author_login column
+  if (insertError && /author_login/.test(insertError.message || "")) {
+    delete commitRow.author_login;
+    ({ data: inserted, error: insertError } = await admin.from("commits").insert(commitRow).select("*").single());
+  }
 
   if (insertError) {
     if (insertError.code === "23505") return { status: "exists", commit: await getStoredCommit(opts.repo.id, details.sha) };
@@ -215,7 +218,7 @@ export async function ensureCommitIndexed(repo: RepoRef, sha: string, token: str
   const r = await indexCommit({ repo, sha, token });
   if (!r.commit) throw new HttpError(502, `Could not analyse this commit. ${r.error || "Please try again."}`);
   if (r.status === "processed") {
-    logUsage({ kind: "index", cached: false, requester, repoId: repo.id, model: r.model, usage: r.usage });
+    logUsage({ kind: "index", cached: false, requester, repoId: repo.id, commitSha: r.commit.commit_sha, model: r.model, usage: r.usage });
   }
   return { commit: r.commit, cached: r.status !== "processed" };
 }

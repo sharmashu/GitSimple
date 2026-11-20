@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Home, LayoutDashboard, Github, Activity, MessageSquare } from "lucide-react";
+import { Home, LayoutDashboard, Github, Activity, MessageSquare, Users } from "lucide-react";
 
 export default function Sidebar() {
   const pathname = usePathname();
@@ -12,6 +12,7 @@ export default function Sidebar() {
     { name: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
     { name: "Timeline", href: "/dashboard/timeline", icon: Activity },
     { name: "Ask the Repo", href: "/dashboard/ask", icon: MessageSquare },
+    { name: "Team Activity", href: "/dashboard/team", icon: Users },
   ];
 
   return (

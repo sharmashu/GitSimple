@@ -22,7 +22,7 @@ export async function POST(req: NextRequest) {
     const { commit, cached } = await ensureCommitIndexed(repo, sha, token, requester);
     const related = await relatedHistoryForCommit(commit, { limit: 4 });
 
-    if (cached) logUsage({ kind: "brief", cached: true, requester, repoId: repo.id });
+    if (cached) logUsage({ kind: "brief", cached: true, requester, repoId: repo.id, commitSha: commit.commit_sha });
 
     return NextResponse.json({
       summary: commit.brief_summary || commit.executive_summary,

@@ -6,6 +6,7 @@ Understand any GitHub repository in plain English.
 - **Oracle chat**: ask about one commit or the whole repository. Answers cite the commits they come from.
 - **PDF reports**: a detailed engineering report per commit, including how it fits the project history.
 - **Commit Timeline** (signed in): every push to your tracked repos, with impact levels and breaking-change alerts.
+- **Team Activity** (managers): each team member's history in GitSimple (repos opened, commits explained, Oracle chats, PDFs, questions) and their work progress (commits shipped, by impact, over time). Question text is never stored.
 - **Teams**: managers invite employees/interns and assign repositories.
 
 Public repositories work **without an account**. Private repositories need **Sign in with GitHub**.
@@ -97,7 +98,7 @@ cp .env.example .env.local     # fill it in
 npm run dev
 ```
 
-**Existing database (upgrading):** run `supabase/migrations/002_security_timeline_rag.sql`, then `003_public_repos_cache_usage.sql`.
+**Existing database (upgrading):** run `supabase/migrations/002_security_timeline_rag.sql`, then `003_public_repos_cache_usage.sql`, then `004_team_activity.sql`.
 
 ## Configuration reference
 
@@ -118,7 +119,7 @@ npm run dev
 ```
 app/
   page.tsx                 Public home: open any repo, Commits + Ask tabs
-  dashboard/               Signed-in area: team, Timeline, Ask, usage
+  dashboard/               Signed-in area: team, Timeline, Ask, Team Activity, usage
   api/commits              List commits (+ already-analysed summaries)
   api/explain/brief|chat|pdf
   api/ask                  Whole-repo Q&A

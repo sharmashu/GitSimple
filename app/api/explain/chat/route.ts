@@ -30,7 +30,7 @@ export async function POST(req: NextRequest) {
     const key = cacheKey("chat", repo.id, commit.commit_sha, normalizeQuestion(userMessage), hist);
     const hit = await getCached<{ answer: string; sources: any[] }>(key);
     if (hit) {
-      logUsage({ kind: "chat", cached: true, requester, repoId: repo.id });
+      logUsage({ kind: "chat", cached: true, requester, repoId: repo.id, commitSha: commit.commit_sha });
       return NextResponse.json({ ...hit, cached: true });
     }
 
@@ -61,7 +61,7 @@ export async function POST(req: NextRequest) {
 
     const response = { answer: result.text, sources };
     await setCached(key, "chat", response, { repoId: repo.id, commitSha: commit.commit_sha });
-    logUsage({ kind: "chat", cached: false, requester, repoId: repo.id, model: result.model, usage: result.usage });
+    logUsage({ kind: "chat", cached: false, requester, repoId: repo.id, commitSha: commit.commit_sha, model: result.model, usage: result.usage });
     return NextResponse.json({ ...response, cached: false });
   } catch (e) {
     return errorResponse(e, "Failed to answer.");

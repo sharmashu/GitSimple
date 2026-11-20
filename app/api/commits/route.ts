@@ -5,9 +5,12 @@ import { listCommits, CommitListItem } from "@/lib/github";
 import { createAdminClient } from "@/utils/supabase/server";
 import { errorResponse } from "@/lib/errors";
 import { MemoryCache } from "@/lib/memoryCache";
+import { logUsage } from "@/lib/usage";
 
 // Commit lists are cached for 60s (public repos are shared between all visitors)
 const listCache = new MemoryCache<{ commits: CommitListItem[]; hasMore: boolean }>(500, 60_000);
+// One "opened repository" activity row per user and repo every 15 minutes (for Team Activity)
+const openLogged = new MemoryCache<true>(5000, 15 * 60_000);
 
 /** GET /api/commits?repo=<github url>&page=1 — works without login for public repos. */
 export async function GET(req: NextRequest) {
@@ -16,6 +19,14 @@ export async function GET(req: NextRequest) {
     const page = Math.min(Math.max(parseInt(searchParams.get("page") || "1", 10) || 1, 1), 50);
     const requester = await getRequester(req);
     const { repo, token } = await resolveRepo({ repoUrl: searchParams.get("repo") }, requester);
+
+    if (requester.user && page === 1) {
+      const openKey = `${requester.user.id}|${repo.id}`;
+      if (!openLogged.get(openKey)) {
+        openLogged.set(openKey, true);
+        logUsage({ kind: "open", cached: true, requester, repoId: repo.id });
+      }
+    }
 
     const cacheId = `${repo.id}|${page}|${repo.private ? requester.key : "public"}`;
     let list = listCache.get(cacheId);

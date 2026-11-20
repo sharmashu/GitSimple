@@ -1,5 +1,20 @@
 # GitSimple: change log
 
+## Round 4: Team Activity for managers
+- New **Team Activity** page (`/dashboard/team`, managers only), with a 7 / 30 / 90-day period.
+  - Team overview: members, how many were active, commits explored, commits shipped (+/- lines).
+  - Per member: status (active today / N days ago / inactive), commits opened, Oracle chats, PDF reports,
+    repo questions, repos explored, commits shipped, impact mix, and two bar charts:
+    activity in GitSimple and commits shipped over time.
+  - Member detail: day-by-day history (what they opened, on which repo and commit), where they worked
+    (per-repository table), and every commit they shipped with its AI summary.
+- Usage rows now record the commit ID (`ai_usage.commit_sha`) and a signed-in user opening a repository
+  (`kind = 'open'`, at most once per 15 minutes per repo). Question text is never stored.
+- GitHub username saved at sign-in (`profiles.github_login`) and for each analysed commit (`commits.author_login`),
+  so commits are matched to members by username, email (including GitHub noreply addresses) or name.
+- A manager can only see members whose `manager_id` is them, enforced in the page and by a new RLS policy.
+- Upgrade: run `supabase/migrations/004_team_activity.sql`. The app keeps working before the migration is run.
+
 ## Round 3: Chrome extension removed
 - The browser extension is no longer part of the project. All features are used through the web app.
 

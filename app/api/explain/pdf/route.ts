@@ -34,7 +34,7 @@ async function getOrCreateReport(commit: CommitRow, requester: Requester): Promi
     });
     // Stored once: every later download (by anyone with access) costs 0 tokens
     await createAdminClient().from("commits").update({ detailed_report: result.text }).eq("id", commit.id);
-    logUsage({ kind: "pdf", cached: false, requester, repoId: commit.repo_id, model: result.model, usage: result.usage });
+    logUsage({ kind: "pdf", cached: false, requester, repoId: commit.repo_id, commitSha: commit.commit_sha, model: result.model, usage: result.usage });
     return result.text;
   })().finally(() => inflight.delete(commit.id));
   inflight.set(commit.id, p);
@@ -51,7 +51,7 @@ export async function GET(req: NextRequest) {
     const { repo, token } = await resolveRepo({ repoUrl: searchParams.get("repoUrl") }, requester);
     const { commit } = await ensureCommitIndexed(repo, sha, token, requester);
     const { report, cached } = await getOrCreateReport(commit, requester);
-    if (cached) logUsage({ kind: "pdf", cached: true, requester, repoId: repo.id });
+    if (cached) logUsage({ kind: "pdf", cached: true, requester, repoId: repo.id, commitSha: commit.commit_sha });
 
     const related = await relatedHistoryForCommit(commit, { limit: 6 });
     const pdf = generateCommitPDF({

@@ -46,6 +46,7 @@ export default async function DashboardPage({ searchParams }: { searchParams: { 
     .from('ai_usage')
     .select('cached, input_tokens, output_tokens')
     .eq('user_id', user.id)
+    .neq('kind', 'open')
     .gte('created_at', since)
     .limit(10000)
   const usage = (usageRows || []).reduce(

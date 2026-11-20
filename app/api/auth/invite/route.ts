@@ -7,6 +7,20 @@ import { fetchRepoMeta } from '@/lib/github'
 
 export const maxDuration = 300;
 
+/** Finds a Supabase login account by email (the profile row may be missing). */
+async function findAuthUserByEmail(admin: any, email: string): Promise<{ id: string; email?: string } | null> {
+  const target = email.trim().toLowerCase();
+  for (let page = 1; page <= 20; page++) {
+    const { data, error } = await admin.auth.admin.listUsers({ page, perPage: 200 });
+    if (error) return null;
+    const users = data?.users || [];
+    const hit = users.find((u: any) => (u.email || '').toLowerCase() === target);
+    if (hit) return { id: hit.id, email: hit.email };
+    if (users.length < 200) return null;
+  }
+  return null;
+}
+
 export async function POST(request: Request) {
   const contentType = request.headers.get('content-type') || ''
   try {
@@ -78,7 +92,15 @@ export async function POST(request: Request) {
         invitedUserId = existingProfile.id;
         console.log(`User ${email} already exists, using existing ID: ${invitedUserId}`);
       } else {
-        throw inviteErr;
+        // The login account exists but its profile row was deleted: find the account and recreate the profile
+        const authUser = await findAuthUserByEmail(adminAuthClient, email);
+        if (!authUser) throw inviteErr;
+        const { error: recreateError } = await adminAuthClient
+          .from('profiles')
+          .upsert({ id: authUser.id, email: authUser.email, role }, { onConflict: 'id' });
+        if (recreateError) throw recreateError;
+        invitedUserId = authUser.id;
+        console.log(`Recreated missing profile for ${email}`);
       }
     }
 

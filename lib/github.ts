@@ -208,6 +208,8 @@ export interface CommitDetails {
   authorName: string;
   authorEmail: string;
   authorAvatar: string;
+  /** GitHub username of the author, when GitHub could link the commit to an account */
+  authorLogin: string;
   date: string;
   additions: number;
   deletions: number;
@@ -228,6 +230,7 @@ export async function fetchCommitDetails(fullName: string, sha: string, token: s
     authorName: c.commit?.author?.name || c.author?.login || "Unknown",
     authorEmail: c.commit?.author?.email || "",
     authorAvatar: c.author?.avatar_url || "",
+    authorLogin: c.author?.login || "",
     date: c.commit?.author?.date || new Date().toISOString(),
     additions: c.stats?.additions || 0,
     deletions: c.stats?.deletions || 0,

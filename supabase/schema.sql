@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS profiles (
     role TEXT NOT NULL DEFAULT 'manager' CHECK (role IN ('manager', 'employee', 'intern')),
     manager_id UUID REFERENCES profiles(id) ON DELETE SET NULL,
     github_token TEXT,
+    github_login TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_profiles_manager ON profiles(manager_id);
@@ -78,6 +79,7 @@ CREATE TABLE IF NOT EXISTS commits (
     breaking_changes TEXT[] DEFAULT '{}',
     affected_domains TEXT[] DEFAULT '{}',
     impact_level TEXT NOT NULL CHECK (impact_level IN ('Breaking', 'Feature', 'Refactor', 'Security', 'Performance', 'Fix')),
+    author_login TEXT,
     stats JSONB DEFAULT '{"files_changed": 0, "additions": 0, "deletions": 0}',
     files JSONB DEFAULT '[]',
     file_paths TEXT[] DEFAULT '{}',
@@ -173,9 +175,12 @@ CREATE TABLE IF NOT EXISTS ai_usage (
     repo_id UUID REFERENCES repositories(id) ON DELETE SET NULL,
     model TEXT,
     input_tokens INT DEFAULT 0,
-    output_tokens INT DEFAULT 0
+    output_tokens INT DEFAULT 0,
+    commit_sha TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_ai_usage_user ON ai_usage (user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_profiles_github_login ON profiles (lower(github_login));
+CREATE INDEX IF NOT EXISTS idx_commits_author_login ON commits (lower(author_login));
 CREATE INDEX IF NOT EXISTS idx_ai_usage_requester ON ai_usage (requester_hash, created_at DESC);
 
 -- Row Level Security (the server uses the service-role key and bypasses RLS) -----
@@ -202,6 +207,7 @@ DROP POLICY IF EXISTS "Members read commits of their repositories" ON commits;
 DROP POLICY IF EXISTS "Members read chunks of their repositories" ON knowledge_chunks;
 DROP POLICY IF EXISTS "Users read their own repo assignments" ON user_repositories;
 DROP POLICY IF EXISTS "Users read own usage" ON ai_usage;
+DROP POLICY IF EXISTS "Managers read team usage" ON ai_usage;
 
 CREATE POLICY "Users read own profile" ON profiles FOR SELECT TO authenticated USING (id = auth.uid());
 CREATE POLICY "Members read their repositories" ON repositories FOR SELECT TO anon, authenticated USING (public.can_access_repo(id));
@@ -209,3 +215,5 @@ CREATE POLICY "Members read commits of their repositories" ON commits FOR SELECT
 CREATE POLICY "Members read chunks of their repositories" ON knowledge_chunks FOR SELECT TO anon, authenticated USING (public.can_access_repo(repo_id));
 CREATE POLICY "Users read their own repo assignments" ON user_repositories FOR SELECT TO authenticated USING (user_id = auth.uid() OR assigned_by = auth.uid());
 CREATE POLICY "Users read own usage" ON ai_usage FOR SELECT TO authenticated USING (user_id = auth.uid());
+CREATE POLICY "Managers read team usage" ON ai_usage FOR SELECT TO authenticated
+  USING (EXISTS (SELECT 1 FROM profiles p WHERE p.id = ai_usage.user_id AND p.manager_id = auth.uid()));
