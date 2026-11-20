@@ -16,7 +16,7 @@ serve(async (req: Request) => {
     return new Response(JSON.stringify({ error: "Method not allowed" }), {
       status: 405,
       headers: { "Content-Type": "application/json" },
-    });
+    }); ``
   }
 
   try {

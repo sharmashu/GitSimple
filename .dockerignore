@@ -1,0 +1,16 @@
+node_modules
+.next
+.git
+.gitignore
+*.md
+!README.md
+.env
+.env.*
+!.env.example
+supabase/functions
+Dockerfile
+docker-compose.yml
+npm-debug.log*
+.DS_Store
+.vercel
+coverage

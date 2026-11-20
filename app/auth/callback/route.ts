@@ -1,10 +1,12 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/utils/supabase/server'
+import { safeNext } from '@/lib/site'
 
 export async function GET(request: Request) {
   const { searchParams, origin } = new URL(request.url)
   const code = searchParams.get('code')
-  const next = searchParams.get('next') ?? '/dashboard'
+  const next = safeNext(searchParams.get('next'))
+  const base = (process.env.SITE_URL || process.env.NEXT_PUBLIC_SITE_URL || origin).replace(/\/+$/, '')
 
   if (code) {
     const supabase = createClient()
@@ -25,10 +27,10 @@ export async function GET(request: Request) {
           .eq('id', data.session.user.id);
       }
 
-      return NextResponse.redirect(`${origin}${next}`)
+      return NextResponse.redirect(`${base}${next}`)
     }
   }
 
   // return the user to an error page with instructions
-  return NextResponse.redirect(`${origin}/login?message=Could not authenticate with provider`)
+  return NextResponse.redirect(`${base}/login?message=Could not authenticate with provider`)
 }

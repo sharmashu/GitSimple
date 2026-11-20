@@ -1,5 +1,11 @@
 import { createClient } from '@/utils/supabase/server'
 import { NextResponse } from 'next/server'
+import { waitUntil } from '@vercel/functions'
+import { trackRepository, backfillRepo } from '@/lib/commitProcessor'
+import { isValidFullName, parseGithubRepoUrl } from '@/lib/validation'
+import { fetchRepoMeta } from '@/lib/github'
+
+export const maxDuration = 300;
 
 export async function POST(request: Request) {
   const contentType = request.headers.get('content-type') || ''
@@ -100,82 +106,27 @@ export async function POST(request: Request) {
           continue;
         }
 
-        // Upsert into repositories table
-        const { data: upsertedRepo, error: repoError } = await adminAuthClient
-          .from('repositories')
-          .upsert({
-            name: repoObj.name,
-            owner: repoObj.name.split('/')[0] || 'unknown',
-            url: repoObj.url,
-            default_branch: repoObj.default_branch || 'main'
-          }, { onConflict: 'name' })
-          .select('id')
-          .single();
-
-        if (repoError) {
-          console.error("Failed to upsert repo", repoError);
-          throw repoError;
+        if (!repoObj || !isValidFullName(repoObj.name) || !parseGithubRepoUrl(repoObj.url)) {
+          console.error("Skipping invalid repo", repoStr);
+          continue;
         }
 
-        // --- AUTOMATIC WEBHOOK CREATION ---
-        const webhookUrl = process.env.WEBHOOK_PROXY_URL;
-        const webhookSecret = process.env.GITHUB_WEBHOOK_SECRET;
-        
-        if (webhookUrl && webhookSecret && profile?.github_token && repoObj.name) {
-          try {
-            // First check if it already exists
-            const hooksRes = await fetch(`https://api.github.com/repos/${repoObj.name}/hooks`, {
-              headers: {
-                Authorization: `Bearer ${profile.github_token}`,
-                Accept: 'application/vnd.github.v3+json',
-              }
-            });
-            
-            if (hooksRes.ok) {
-              const hooks = await hooksRes.json();
-              const hasWebhook = hooks.some((h: any) => h.config.url === webhookUrl);
-              
-              if (!hasWebhook) {
-                // Create the webhook
-                const createRes = await fetch(`https://api.github.com/repos/${repoObj.name}/hooks`, {
-                  method: 'POST',
-                  headers: {
-                    Authorization: `Bearer ${profile.github_token}`,
-                    Accept: 'application/vnd.github.v3+json',
-                    'Content-Type': 'application/json'
-                  },
-                  body: JSON.stringify({
-                    name: 'web',
-                    active: true,
-                    events: ['push'],
-                    config: {
-                      url: webhookUrl,
-                      content_type: 'json',
-                      secret: webhookSecret,
-                      insecure_ssl: '0'
-                    }
-                  })
-                });
-                
-                if (createRes.ok) {
-                  console.log(`Successfully created webhook for ${repoObj.name}`);
-                } else {
-                  const errText = await createRes.text();
-                  console.error(`GitHub API error creating webhook:`, errText);
-                }
-              } else {
-                console.log(`Webhook already exists for ${repoObj.name}`);
-              }
-            } else {
-                const errText = await hooksRes.text();
-                console.error(`GitHub API error fetching webhooks:`, errText);
-            }
-          } catch (hookErr) {
-            console.error('Failed to configure GitHub webhook:', hookErr);
-            // Non-fatal, continue with invitation
-          }
+        // Use GitHub's real metadata (never trust the browser about whether a repo is private)
+        const meta = profile?.github_token ? await fetchRepoMeta(repoObj.name, profile.github_token).catch(() => null) : null;
+        if (!meta) {
+          console.error("Manager has no GitHub access to", repoObj.name);
+          continue;
         }
-        // ----------------------------------
+
+        // Save the repo, link it to the manager (so it shows in their timeline) and set up the webhook
+        const upsertedRepo = await trackRepository(
+          { name: meta.full_name, url: meta.html_url, default_branch: meta.default_branch, private: !!meta.private },
+          user.id,
+          profile?.github_token || null
+        );
+        if (!upsertedRepo.hasCommits) {
+          waitUntil(backfillRepo(upsertedRepo.id, meta.full_name, meta.default_branch || null, 10).then(() => undefined));
+        }
 
         assignments.push({
           user_id: invitedUserId,
@@ -187,7 +138,7 @@ export async function POST(request: Request) {
       if (assignments.length > 0) {
         const { error: assignError } = await adminAuthClient
           .from('user_repositories')
-          .insert(assignments)
+          .upsert(assignments, { onConflict: 'user_id,repository_id', ignoreDuplicates: true })
 
         if (assignError) throw assignError
       }

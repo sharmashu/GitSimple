@@ -1,287 +1,207 @@
 "use client";
 
-import { useState, useEffect, Suspense } from "react";
-import { useSearchParams } from "next/navigation";
-import { Loader2, Github, Sparkles, FileText, MessageSquare } from "lucide-react";
+import { useEffect, useState, Suspense, useCallback } from "react";
+import Link from "next/link";
+import { useSearchParams, useRouter } from "next/navigation";
+import { Loader2, Github, Lock, Globe, Sparkles, GitCommit, Zap, FileText, MessageSquare } from "lucide-react";
+import CommitCard, { CommitItem } from "@/components/CommitCard";
+import AskChat from "@/components/AskChat";
+
+interface RepoInfo {
+  id: string;
+  name: string;
+  url: string;
+  private: boolean;
+}
+
+const EXAMPLES = ["vercel/swr", "facebook/react", "supabase/supabase"];
+
+/** Accepts "owner/repo", "github.com/owner/repo" or a full URL. */
+function normalizeRepoInput(v: string): string {
+  const s = v.trim().replace(/\/+$/, "");
+  if (/^[\w.-]+\/[\w.-]+$/.test(s)) return `https://github.com/${s}`;
+  if (s.startsWith("github.com/")) return `https://${s}`;
+  return s;
+}
 
 function HomeContent() {
   const searchParams = useSearchParams();
-  const initialRepo = searchParams.get("repo");
+  const router = useRouter();
+  const initialRepo = searchParams.get("repo") || "";
 
-  const [repoUrl, setRepoUrl] = useState(initialRepo || "");
+  const [repoInput, setRepoInput] = useState(initialRepo);
+  const [repo, setRepo] = useState<RepoInfo | null>(null);
+  const [commits, setCommits] = useState<CommitItem[]>([]);
+  const [page, setPage] = useState(1);
+  const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [commits, setCommits] = useState<any[]>([]);
-  const [error, setError] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [error, setError] = useState<{ message: string; needsLogin?: boolean; needsGithub?: boolean } | null>(null);
+  const [tab, setTab] = useState<"commits" | "ask">("commits");
 
-  // States for individual commits
-  const [briefs, setBriefs] = useState<Record<string, { loading: boolean, text: string | null }>>({});
-  const [activeChat, setActiveChat] = useState<string | null>(null); // commit sha
-  const [chatMessages, setChatMessages] = useState<Record<string, { role: string, content: string }[]>>({});
-  const [chatInput, setChatInput] = useState("");
-  const [chatLoading, setChatLoading] = useState(false);
-
-  const fetchCommitsData = async (url: string) => {
+  const load = useCallback(async (url: string, pageNum = 1) => {
     if (!url) return;
-
-    setLoading(true);
+    pageNum === 1 ? setLoading(true) : setLoadingMore(true);
     setError(null);
-    setCommits([]);
-
     try {
-      const res = await fetch(`/api/commits?repo=${encodeURIComponent(url)}`);
+      const res = await fetch(`/api/commits?repo=${encodeURIComponent(url)}&page=${pageNum}`);
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to fetch commits");
-
-      setCommits(data.commits);
-    } catch (err: any) {
-      setError(err.message);
+      if (!res.ok) {
+        setError({ message: data.error || "Failed to fetch commits", needsLogin: data.needsLogin, needsGithub: data.needsGithub });
+        if (pageNum === 1) { setRepo(null); setCommits([]); }
+        return;
+      }
+      setRepo(data.repo);
+      setCommits((prev) => (pageNum === 1 ? data.commits : [...prev, ...data.commits]));
+      setPage(pageNum);
+      setHasMore(data.hasMore);
+    } catch {
+      setError({ message: "Couldn't reach the server." });
     } finally {
       setLoading(false);
+      setLoadingMore(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     if (initialRepo) {
-      fetchCommitsData(initialRepo);
+      setRepoInput(initialRepo);
+      setTab("commits");
+      load(normalizeRepoInput(initialRepo));
     }
-  }, [initialRepo]);
+  }, [initialRepo, load]);
 
-  const fetchCommits = async (e: React.FormEvent) => {
+  const submit = (e: React.FormEvent) => {
     e.preventDefault();
-    fetchCommitsData(repoUrl);
+    const url = normalizeRepoInput(repoInput);
+    if (!url) return;
+    // Put the repo in the URL so the page can be shared / bookmarked
+    router.push(`/?repo=${encodeURIComponent(url)}`);
   };
 
-  const getBriefExplanation = async (commit: any) => {
-    if (briefs[commit.sha]) return; // already loaded or loading
-
-    setBriefs(prev => ({ ...prev, [commit.sha]: { loading: true, text: null } }));
-
-    try {
-      const res = await fetch("/api/explain/brief", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ diffUrl: commit.diffUrl, repoUrl: repoUrl, sha: commit.sha })
-      });
-      const data = await res.json();
-      setBriefs(prev => ({ ...prev, [commit.sha]: { loading: false, text: data.summary } }));
-    } catch (err) {
-      setBriefs(prev => ({ ...prev, [commit.sha]: { loading: false, text: "Failed to load explanation." } }));
-    }
-  };
-
-  const handleChat = async (commit: any, e: React.FormEvent) => {
-    e.preventDefault();
-    if (!chatInput.trim()) return;
-
-    const userMessage = chatInput.trim();
-    setChatInput("");
-
-    const history = chatMessages[commit.sha] || [];
-    const updatedHistory = [...history, { role: "user", content: userMessage }];
-
-    setChatMessages(prev => ({ ...prev, [commit.sha]: updatedHistory }));
-    setChatLoading(true);
-
-    try {
-      const res = await fetch("/api/explain/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          diffUrl: commit.diffUrl,
-          repoUrl: repoUrl,
-          sha: commit.sha,
-          userMessage: userMessage,
-          history: history
-        })
-      });
-      const data = await res.json();
-      setChatMessages(prev => ({
-        ...prev,
-        [commit.sha]: [...updatedHistory, { role: "assistant", content: data.answer }]
-      }));
-    } catch (err) {
-      setChatMessages(prev => ({
-        ...prev,
-        [commit.sha]: [...updatedHistory, { role: "assistant", content: "Sorry, I couldn't connect to the Oracle." }]
-      }));
-    } finally {
-      setChatLoading(false);
-    }
-  };
+  const loginNext = `/login?next=${encodeURIComponent(`/?repo=${encodeURIComponent(normalizeRepoInput(repoInput))}`)}`;
 
   return (
-    <main className="min-h-screen bg-[#0a0a0a] text-zinc-300 font-sans selection:bg-purple-500/30">
+    <main className="min-h-full bg-[#0a0a0a] text-zinc-300 font-sans selection:bg-purple-500/30">
       <div className="py-12 px-4">
-        {/* Header */}
-        <div className="max-w-4xl mx-auto flex flex-col items-center text-center space-y-4 mb-12">
+        <div className="max-w-4xl mx-auto flex flex-col items-center text-center space-y-4 mb-10">
           <div className="w-14 h-14 bg-gradient-to-br from-indigo-500 to-purple-500 rounded-2xl flex items-center justify-center shadow-lg shadow-purple-500/20">
             <Github className="w-7 h-7 text-white" />
           </div>
           <h1 className="text-4xl md:text-5xl font-bold tracking-tight text-white mt-4">
-            Analyze <span className="text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-indigo-500">Public Git Profiles</span>
+            Understand any <span className="text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-indigo-500">GitHub repository</span>
           </h1>
           <p className="text-lg text-zinc-400 max-w-2xl mx-auto">
-            Paste any public GitHub repository URL to understand its commits, architecture, and logic simply in seconds.
+            Plain-English commit explanations, an AI Oracle that knows the project&apos;s history, and PDF reports.
           </p>
 
-        <form onSubmit={fetchCommits} className="w-full max-w-xl mt-6 flex gap-2">
-          <input
-            type="url"
-            value={repoUrl}
-            onChange={(e) => setRepoUrl(e.target.value)}
-            placeholder="https://github.com/"
-            className="flex-1 bg-[#111111] border border-zinc-800 text-zinc-100 px-4 py-3 rounded-xl outline-none focus:border-purple-500"
-            required
-          />
-          <button
-            type="submit"
-            disabled={loading || !repoUrl}
-            className="bg-zinc-100 hover:bg-white text-zinc-900 font-semibold px-6 py-3 rounded-xl transition-all disabled:opacity-50"
-          >
-            {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : "Fetch"}
-          </button>
-        </form>
-        {error && <p className="text-red-400 mt-2">{error}</p>}
-      </div>
+          <form onSubmit={submit} className="w-full max-w-xl mt-6 flex gap-2">
+            <input
+              type="text"
+              value={repoInput}
+              onChange={(e) => setRepoInput(e.target.value)}
+              placeholder="https://github.com/owner/repo  or  owner/repo"
+              className="flex-1 bg-[#111111] border border-zinc-800 text-zinc-100 px-4 py-3 rounded-xl outline-none focus:border-purple-500"
+              required
+            />
+            <button type="submit" disabled={loading || !repoInput.trim()} className="bg-zinc-100 hover:bg-white text-zinc-900 font-semibold px-6 py-3 rounded-xl disabled:opacity-50">
+              {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : "Open"}
+            </button>
+          </form>
 
-      {/* Commits List */}
-      {commits.length > 0 && (
-        <div className="max-w-4xl mx-auto mb-10">
-          <div className="flex items-center gap-4 mb-8">
-            <div className="h-px bg-gradient-to-r from-transparent to-zinc-800 flex-1"></div>
-            <h2 className="text-2xl font-bold text-white tracking-tight flex items-center gap-2">
-              <span className="w-2 h-2 rounded-full bg-purple-500 animate-pulse"></span>
-              Latest Commits
-            </h2>
-            <div className="h-px bg-gradient-to-l from-transparent to-zinc-800 flex-1"></div>
+          <div className="flex flex-wrap justify-center items-center gap-2 text-xs text-zinc-500">
+            <span>Try:</span>
+            {EXAMPLES.map((ex) => (
+              <button key={ex} onClick={() => router.push(`/?repo=${encodeURIComponent(`https://github.com/${ex}`)}`)} className="px-2.5 py-1 rounded-full border border-zinc-800 hover:border-zinc-600 hover:text-zinc-300">
+                {ex}
+              </button>
+            ))}
           </div>
-          <div className="space-y-5">
-            {commits.slice(0, 15).map((commit) => {
-              const isChatOpen = activeChat === commit.sha;
-              const brief = briefs[commit.sha];
-              const hasBrief = !!brief;
 
-              return (
-                <div key={commit.sha} className="bg-[#111111]/80 backdrop-blur-md border border-zinc-800/80 rounded-2xl p-5 shadow-xl transition-all duration-300 hover:border-purple-500/30 hover:bg-[#141414] hover:shadow-purple-500/5 group">
-                  <div className="flex gap-4 items-start mb-5">
-                    <div className="w-10 h-10 rounded-full bg-gradient-to-br from-zinc-800 to-zinc-900 border border-zinc-700/50 flex items-center justify-center shrink-0 shadow-inner">
-                      <span className="text-sm font-bold text-zinc-400 group-hover:text-purple-400 transition-colors">
-                        {commit.author.substring(0, 2).toUpperCase()}
-                      </span>
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-3 flex-wrap mb-1">
-                        <h3 className="text-base font-semibold text-zinc-100 truncate group-hover:text-white transition-colors">
-                          {commit.message.split('\n')[0]}
-                        </h3>
-                        <span className="px-2 py-0.5 rounded-md bg-zinc-800/80 border border-zinc-700/50 text-xs font-mono text-zinc-400">
-                          {commit.shortSha}
-                        </span>
-                      </div>
-                      <p className="text-sm text-zinc-500 flex items-center gap-2 flex-wrap">
-                        <span className="font-medium text-zinc-400">{commit.author}</span>
-                        <span>committed on</span>
-                        <span className="text-zinc-400">
-                          {new Date(commit.date).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}
-                        </span>
-                      </p>
-                    </div>
-                  </div>
+          <div className="grid sm:grid-cols-2 gap-3 w-full max-w-xl pt-4 text-left">
+            <div className="p-3 rounded-xl border border-zinc-800 bg-zinc-900/40">
+              <p className="text-sm text-white font-medium flex items-center gap-2"><Globe className="w-4 h-4 text-emerald-400" /> Public repos</p>
+              <p className="text-xs text-zinc-500 mt-1">No account needed. Just paste the link.</p>
+            </div>
+            <div className="p-3 rounded-xl border border-zinc-800 bg-zinc-900/40">
+              <p className="text-sm text-white font-medium flex items-center gap-2"><Lock className="w-4 h-4 text-amber-400" /> Private repos</p>
+              <p className="text-xs text-zinc-500 mt-1">
+                <Link href="/login" className="text-purple-400 hover:underline">Sign in with GitHub</Link> and open any repo you have access to.
+              </p>
+            </div>
+          </div>
 
-                  {/* Actions */}
-                  <div className="flex flex-wrap gap-3 pl-14">
-                    {!hasBrief && (
-                      <button
-                        onClick={() => getBriefExplanation(commit)}
-                        className="flex items-center gap-2 px-4 py-2 bg-purple-500/10 text-purple-400 hover:bg-purple-500/20 hover:text-purple-300 border border-purple-500/20 rounded-xl text-sm font-medium transition-all"
-                      >
-                        <Sparkles className="w-4 h-4" />
-                        Explain Simply
-                      </button>
-                    )}
+          {error && (
+            <div className="w-full max-w-xl mt-2 p-4 rounded-xl border border-red-500/30 bg-red-500/5 text-left">
+              <p className="text-red-300 text-sm">{error.message}</p>
+              {(error.needsLogin || error.needsGithub) && (
+                <Link href={loginNext} className="inline-flex items-center gap-2 mt-3 text-sm font-medium text-white bg-purple-600 hover:bg-purple-500 px-4 py-2 rounded-lg">
+                  <Github className="w-4 h-4" /> Sign in with GitHub
+                </Link>
+              )}
+            </div>
+          )}
+        </div>
 
-                    <a
-                      href={`/api/explain/pdf?diffUrl=${encodeURIComponent(commit.diffUrl)}&repoUrl=${encodeURIComponent(repoUrl)}&sha=${commit.sha}`}
-                      target="_blank"
-                      className="flex items-center gap-2 px-4 py-2 bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 hover:text-blue-300 border border-blue-500/20 rounded-xl text-sm font-medium transition-all"
-                    >
-                      <FileText className="w-4 h-4" />
-                      Detailed PDF
-                    </a>
+        {!repo && !loading && !error && (
+          <div className="max-w-4xl mx-auto grid md:grid-cols-3 gap-4 pb-8">
+            {[
+              { icon: Sparkles, title: "Explain briefly", text: "Each commit summarised in plain English, with the earlier commits it builds on." },
+              { icon: MessageSquare, title: "Oracle chat", text: "Ask about a commit or the whole repo. Answers cite the commits they come from." },
+              { icon: FileText, title: "PDF reports", text: "A detailed engineering report per commit, including how it fits the project history." },
+            ].map((f) => (
+              <div key={f.title} className="p-5 rounded-2xl border border-zinc-800 bg-[#111111]/60">
+                <f.icon className="w-5 h-5 text-purple-400" />
+                <p className="text-white font-medium mt-3">{f.title}</p>
+                <p className="text-sm text-zinc-500 mt-1">{f.text}</p>
+              </div>
+            ))}
+            <p className="md:col-span-3 text-center text-xs text-zinc-600 flex items-center justify-center gap-1">
+              <Zap className="w-3 h-3" /> Results are shared and cached: if anyone has analysed a commit before, you get it instantly.
+            </p>
+          </div>
+        )}
 
+        {repo && (
+          <div className="max-w-4xl mx-auto mb-10">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-6">
+              <div className="flex items-center gap-3">
+                <a href={repo.url} target="_blank" rel="noreferrer" className="text-xl font-bold text-white hover:underline">{repo.name}</a>
+                <span className={`text-xs px-2 py-0.5 rounded-full border ${repo.private ? "border-amber-500/30 text-amber-300 bg-amber-500/10" : "border-emerald-500/30 text-emerald-300 bg-emerald-500/10"}`}>
+                  {repo.private ? "Private" : "Public"}
+                </span>
+              </div>
+              <div className="flex bg-zinc-900 border border-zinc-800 rounded-xl p-1 w-fit">
+                <button onClick={() => setTab("commits")} className={`px-4 py-1.5 rounded-lg text-sm font-medium flex items-center gap-2 ${tab === "commits" ? "bg-zinc-100 text-zinc-900" : "text-zinc-400 hover:text-white"}`}>
+                  <GitCommit className="w-4 h-4" /> Commits
+                </button>
+                <button onClick={() => setTab("ask")} className={`px-4 py-1.5 rounded-lg text-sm font-medium flex items-center gap-2 ${tab === "ask" ? "bg-zinc-100 text-zinc-900" : "text-zinc-400 hover:text-white"}`}>
+                  <Sparkles className="w-4 h-4" /> Ask the Repo
+                </button>
+              </div>
+            </div>
+
+            {tab === "commits" ? (
+              <div className="space-y-4">
+                {commits.length === 0 && <p className="text-center text-zinc-500 py-10">This repository has no commits yet.</p>}
+                {commits.map((c) => <CommitCard key={c.sha} commit={c} repoUrl={repo.url} />)}
+                {hasMore && (
+                  <div className="text-center pt-2">
                     <button
-                      onClick={() => setActiveChat(isChatOpen ? null : commit.sha)}
-                      className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all border ${
-                        isChatOpen 
-                          ? "bg-zinc-800 text-white border-zinc-600" 
-                          : "bg-zinc-800/50 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 border-zinc-700/50 hover:border-zinc-700"
-                      }`}
+                      onClick={() => load(repo.url, page + 1)}
+                      disabled={loadingMore}
+                      className="px-5 py-2 rounded-xl border border-zinc-700 text-sm text-zinc-300 hover:text-white hover:border-zinc-500 disabled:opacity-50"
                     >
-                      <MessageSquare className="w-4 h-4" />
-                      {isChatOpen ? "Close Chat" : "Ask Oracle"}
+                      {loadingMore ? <Loader2 className="w-4 h-4 animate-spin inline" /> : "Load older commits"}
                     </button>
                   </div>
-
-                  {/* Brief Summary */}
-                  {brief && (
-                    <div className="mt-5 ml-14 p-4 bg-zinc-900/80 rounded-xl border border-zinc-800/80 text-zinc-300 text-sm leading-relaxed relative">
-                      <div className="absolute -left-2 top-4 w-2 h-2 rotate-45 bg-zinc-900/80 border-l border-b border-zinc-800/80"></div>
-                      {brief.loading ? (
-                        <div className="flex items-center gap-2 text-zinc-500">
-                          <Loader2 className="w-4 h-4 animate-spin" /> Analyzing commit...
-                        </div>
-                      ) : (
-                        brief.text
-                      )}
-                    </div>
-                  )}
-
-                  {/* Chatbot Area */}
-                  {isChatOpen && (
-                    <div className="mt-5 ml-14 border border-zinc-800/80 bg-zinc-900/50 rounded-xl overflow-hidden shadow-inner">
-                      <div className="h-56 overflow-y-auto p-4 space-y-4 flex flex-col custom-scrollbar">
-                        {(!chatMessages[commit.sha] || chatMessages[commit.sha].length === 0) && (
-                          <div className="flex-1 flex flex-col items-center justify-center text-center opacity-50 space-y-2">
-                            <MessageSquare className="w-8 h-8 text-zinc-500 mb-2" />
-                            <p className="text-zinc-400 text-sm max-w-[250px]">
-                              Ask me what a functionality does, or what this commit means!
-                            </p>
-                          </div>
-                        )}
-                        {chatMessages[commit.sha]?.map((msg, i) => (
-                          <div key={i} className={`p-3.5 rounded-xl text-sm shadow-sm ${
-                            msg.role === 'user' 
-                              ? 'bg-zinc-800 text-zinc-200 ml-auto max-w-[85%] rounded-tr-sm border border-zinc-700' 
-                              : 'bg-gradient-to-br from-purple-900/30 to-purple-800/10 text-purple-100 border border-purple-500/20 mr-auto max-w-[95%] rounded-tl-sm'
-                          }`}>
-                            {msg.content}
-                          </div>
-                        ))}
-                      </div>
-                      <form onSubmit={(e) => handleChat(commit, e)} className="flex gap-2 p-3 bg-zinc-900 border-t border-zinc-800/80">
-                        <input
-                          type="text"
-                          value={chatInput}
-                          onChange={(e) => setChatInput(e.target.value)}
-                          placeholder="Ask the Oracle..."
-                          className="flex-1 bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-2.5 text-sm text-zinc-100 outline-none focus:border-purple-500/50 focus:ring-1 focus:ring-purple-500/50 transition-all placeholder:text-zinc-600"
-                        />
-                        <button 
-                          type="submit" 
-                          disabled={chatLoading || !chatInput.trim()} 
-                          className="bg-purple-600 hover:bg-purple-500 text-white px-5 py-2.5 rounded-xl text-sm font-medium transition-all disabled:opacity-50 disabled:hover:bg-purple-600 flex items-center justify-center min-w-[80px] shadow-lg shadow-purple-500/20"
-                        >
-                          {chatLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : "Send"}
-                        </button>
-                      </form>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+                )}
+              </div>
+            ) : (
+              <AskChat key={repo.url} mode="url" repoUrl={repo.url} repoName={repo.name} />
+            )}
           </div>
-        </div>
-      )}
+        )}
       </div>
     </main>
   );
@@ -289,11 +209,7 @@ function HomeContent() {
 
 export default function Home() {
   return (
-    <Suspense fallback={
-      <div className="min-h-screen bg-[#0a0a0a] flex items-center justify-center">
-        <Loader2 className="w-8 h-8 text-purple-500 animate-spin" />
-      </div>
-    }>
+    <Suspense fallback={<div className="min-h-full bg-[#0a0a0a]" />}>
       <HomeContent />
     </Suspense>
   );

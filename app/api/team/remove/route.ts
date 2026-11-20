@@ -6,6 +6,13 @@ export async function POST(request: Request) {
     const supabase = createClient()
     const { data: { user } } = await supabase.auth.getUser()
 
+    if (!user) {
+      if ((request.headers.get('content-type') || '').includes('application/json')) {
+        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+      }
+      return NextResponse.redirect(new URL('/login', request.url), 303)
+    }
+
     const contentType = request.headers.get('content-type') || ''
     
     let userIdToRemove: string

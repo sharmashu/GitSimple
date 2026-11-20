@@ -5,6 +5,11 @@
 -- It enables vector similarity search, creates tables for commits and chunks,
 -- indexes 1536-dimensional embeddings with HNSW, and creates the match_documents RPC.
 -- ==============================================================================
+-- IMPORTANT: after running this file, also run
+--   supabase/migrations/002_security_timeline_rag.sql
+-- It replaces the open "USING (true)" policies below with per-user access,
+-- switches embeddings to Gemini (768 dims) and adds timeline indexes.
+-- ==============================================================================
 
 -- 1. Enable required PostgreSQL extensions
 CREATE EXTENSION IF NOT EXISTS vector;

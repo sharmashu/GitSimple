@@ -1,35 +1,42 @@
 import { NextRequest, NextResponse } from "next/server";
-import { generateBriefSummary } from "@/lib/AI Summarizer";
-import { getGithubTokenForRepo, fetchCommitDiff } from "@/lib/github";
+import { getRequester } from "@/lib/auth";
+import { resolveRepo } from "@/lib/repoAccess";
+import { ensureCommitIndexed } from "@/lib/commitProcessor";
+import { relatedHistoryForCommit, toSources } from "@/lib/history";
+import { isValidSha } from "@/lib/validation";
+import { errorResponse, HttpError } from "@/lib/errors";
+import { logUsage } from "@/lib/usage";
 
+/**
+ * POST /api/explain/brief { repoUrl, sha }
+ * Returns the stored analysis if anyone analysed this commit before (0 tokens);
+ * otherwise analyses it once, with related history (RAG) as context.
+ */
 export async function POST(req: NextRequest) {
   try {
-    const { diffUrl, repoUrl, sha } = await req.json();
+    const { repoUrl, sha } = await req.json();
+    if (!isValidSha(sha)) throw new HttpError(400, "A valid commit sha is required.");
 
-    if (!diffUrl || !repoUrl || !sha) {
-      return NextResponse.json({ error: "Missing diffUrl, repoUrl, or sha" }, { status: 400 });
-    }
+    const requester = await getRequester(req);
+    const { repo, token } = await resolveRepo({ repoUrl }, requester);
+    const { commit, cached } = await ensureCommitIndexed(repo, sha, token, requester);
+    const related = await relatedHistoryForCommit(commit, { limit: 4 });
 
-    let diffText = "";
-    try {
-      const token = await getGithubTokenForRepo(repoUrl);
-      diffText = await fetchCommitDiff(repoUrl, sha, token);
-    } catch (e) {
-      // Fallback to directly fetching diffUrl (for public repos if rate limited on API)
-      console.warn("API diff fetch failed, trying direct diffUrl fetch", e);
-      const diffResponse = await fetch(diffUrl);
-      if (!diffResponse.ok) throw new Error("Failed to fetch diff");
-      diffText = await diffResponse.text();
-    }
-    if (!diffText.trim()) {
-      return NextResponse.json({ summary: "This commit has no text changes." }, { status: 200 });
-    }
+    if (cached) logUsage({ kind: "brief", cached: true, requester, repoId: repo.id });
 
-    const summary = await generateBriefSummary(diffText);
-    return NextResponse.json({ summary }, { status: 200 });
-
-  } catch (error: any) {
-    console.error("Brief Summary Error:", error);
-    return NextResponse.json({ error: "Failed to generate summary." }, { status: 500 });
+    return NextResponse.json({
+      summary: commit.brief_summary || commit.executive_summary,
+      analysis: {
+        impactLevel: commit.impact_level,
+        executiveSummary: commit.executive_summary,
+        breakingChanges: commit.breaking_changes || [],
+        domains: commit.affected_domains || [],
+        stats: commit.stats,
+      },
+      related: toSources(related, repo.url),
+      cached,
+    });
+  } catch (e) {
+    return errorResponse(e, "Failed to generate summary.");
   }
 }

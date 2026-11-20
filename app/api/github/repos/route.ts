@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server'
-import { createClient } from '@/utils/supabase/server'
-import { createAdminClient } from '@/utils/supabase/server'
+import { createClient, createAdminClient } from '@/utils/supabase/server'
+import { fetchUserRepos, fetchPublicReposForUser } from '@/lib/github'
+
+const USERNAME_RE = /^[A-Za-z0-9-]{1,39}$/
 
 export async function GET(request: Request) {
   try {
@@ -12,52 +14,35 @@ export async function GET(request: Request) {
     if (targetUrl) {
       try {
         const urlObj = new URL(targetUrl.startsWith('http') ? targetUrl : `https://${targetUrl}`)
-        if (urlObj.hostname.includes('github.com')) {
+        if (urlObj.hostname === 'github.com' || urlObj.hostname === 'www.github.com') {
           const pathParts = urlObj.pathname.split('/').filter(Boolean)
-          if (pathParts.length > 0) {
-            username = pathParts[0] // The first part of the path is usually the username/org
-          }
+          if (pathParts.length > 0) username = pathParts[0]
         }
-      } catch (e) {
+      } catch {
         // Invalid URL, ignore and proceed
       }
     }
 
-    const supabase = createClient()
-    const { data: { user } } = await supabase.auth.getUser()
-
     // IF username/url is provided, fetch public repos for that specific user
     if (username) {
-      const githubResponse = await fetch(`https://api.github.com/users/${username}/repos?per_page=100`, {
-        headers: {
-          Accept: 'application/vnd.github.v3+json'
-        }
-      })
-
-      if (!githubResponse.ok) {
-        return NextResponse.json({ error: 'Failed to fetch public repositories for this user' }, { status: githubResponse.status })
+      if (!USERNAME_RE.test(username)) {
+        return NextResponse.json({ error: 'Invalid GitHub username' }, { status: 400 })
       }
-
-      const repos = await githubResponse.json()
-      
-      const formattedRepos = repos.map((repo: any) => ({
-        id: repo.id.toString(),
-        name: repo.full_name,
-        private: repo.private,
-        url: repo.html_url,
-        default_branch: repo.default_branch
-      }))
-
-      return NextResponse.json({ repositories: formattedRepos })
+      try {
+        return NextResponse.json({ repositories: await fetchPublicReposForUser(username) })
+      } catch (e: any) {
+        return NextResponse.json({ error: e.message }, { status: e.status || 502 })
+      }
     }
 
     // IF NO username/url is provided, require login and fetch their own repos
+    const supabase = createClient()
+    const { data: { user } } = await supabase.auth.getUser()
     if (!user) {
       return NextResponse.json({ error: 'Please provide a GitHub URL or log in to view your repositories.' }, { status: 401 })
     }
 
-    const adminClient = createAdminClient()
-    const { data: profile } = await adminClient
+    const { data: profile } = await createAdminClient()
       .from('profiles')
       .select('github_token')
       .eq('id', user.id)
@@ -67,31 +52,12 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: 'GitHub token not found. Please log in with GitHub again.' }, { status: 400 })
     }
 
-    const githubResponse = await fetch('https://api.github.com/user/repos?per_page=100&affiliation=owner,collaborator,organization_member', {
-      headers: {
-        Authorization: `Bearer ${profile.github_token}`,
-        Accept: 'application/vnd.github.v3+json'
-      }
-    })
-
-    if (!githubResponse.ok) {
-      console.error('GitHub API error:', await githubResponse.text())
+    try {
+      return NextResponse.json({ repositories: await fetchUserRepos(profile.github_token) })
+    } catch (e: any) {
+      console.error('GitHub API error:', e)
       return NextResponse.json({ error: 'Failed to fetch repositories from GitHub' }, { status: 502 })
     }
-
-    const repos = await githubResponse.json()
-    
-    // Format the response to be cleaner
-    const formattedRepos = repos.map((repo: any) => ({
-      id: repo.id.toString(),
-      name: repo.full_name,
-      private: repo.private,
-      url: repo.html_url,
-      default_branch: repo.default_branch
-    }))
-
-    return NextResponse.json({ repositories: formattedRepos })
-
   } catch (error: any) {
     console.error('Error fetching GitHub repos:', error)
     return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 })

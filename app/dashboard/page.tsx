@@ -1,10 +1,11 @@
 import { redirect } from 'next/navigation'
 import { createClient } from '@/utils/supabase/server'
-import { LogOut } from 'lucide-react'
+import Link from 'next/link'
+import { fetchUserRepos } from '@/lib/github'
 
 export const dynamic = 'force-dynamic'
 
-export default async function DashboardPage() {
+export default async function DashboardPage({ searchParams }: { searchParams: { message?: string; error?: string } }) {
   const supabase = createClient()
 
   const { data: { user } } = await supabase.auth.getUser()
@@ -23,34 +24,39 @@ export default async function DashboardPage() {
     .eq('id', user.id)
     .single()
 
-  console.log("Admin fetch result:", { profile, error })
+  if (error) console.error("Failed to load profile:", error.message)
 
   const role = profile?.role || 'intern'
 
   // Fetch GitHub repos for manager
   let githubRepos: any[] = []
+  let githubError: string | null = null
   if (role === 'manager' && profile?.github_token) {
     try {
-      const githubResponse = await fetch('https://api.github.com/user/repos?per_page=100&affiliation=owner,collaborator,organization_member', {
-        headers: {
-          Authorization: `Bearer ${profile.github_token}`,
-          Accept: 'application/vnd.github.v3+json'
-        }
-      })
-      if (githubResponse.ok) {
-        const repos = await githubResponse.json()
-        githubRepos = repos.map((repo: any) => ({
-          id: repo.id.toString(),
-          name: repo.full_name,
-          private: repo.private,
-          url: repo.html_url,
-          default_branch: repo.default_branch
-        }))
-      }
-    } catch (e) {
+      githubRepos = await fetchUserRepos(profile.github_token)
+    } catch (e: any) {
       console.error('Error fetching github repos for dashboard', e)
+      githubError = e?.message || 'Unknown error'
     }
   }
+
+  // AI usage over the last 30 days (metering; cached answers cost 0 tokens)
+  const since = new Date(Date.now() - 30 * 86400_000).toISOString()
+  const { data: usageRows } = await adminSupabase
+    .from('ai_usage')
+    .select('cached, input_tokens, output_tokens')
+    .eq('user_id', user.id)
+    .gte('created_at', since)
+    .limit(10000)
+  const usage = (usageRows || []).reduce(
+    (acc: { total: number; cached: number; tokens: number }, r: any) => {
+      acc.total++
+      if (r.cached) acc.cached++
+      acc.tokens += (r.input_tokens || 0) + (r.output_tokens || 0)
+      return acc
+    },
+    { total: 0, cached: 0, tokens: 0 }
+  )
 
   // Fetch assigned repositories (using admin client to bypass any RLS policy misconfigurations)
   const { data: assignedRepos } = await adminSupabase
@@ -59,9 +65,9 @@ export default async function DashboardPage() {
     .eq('user_id', user.id)
 
   // Fetch Team Data
-  let teamMembers = [];
-  let myManager = null;
-  let peerMembers = [];
+  let teamMembers: any[] = [];
+  let myManager: any = null;
+  let peerMembers: any[] = [];
   
   if (role === 'manager') {
     const { data } = await adminSupabase
@@ -91,9 +97,40 @@ export default async function DashboardPage() {
       <header className="mb-12">
         <h1 className="text-3xl font-bold text-slate-800">GitSimple Dashboard</h1>
         <p className="text-sm text-slate-500 uppercase tracking-wide mt-2">Role: {role}</p>
+        <div className="flex flex-wrap gap-3 mt-4">
+          <Link href="/dashboard/timeline" className="px-4 py-2 bg-slate-900 text-white rounded-md text-sm font-medium hover:bg-slate-800">
+            Commit Timeline &rarr;
+          </Link>
+          <Link href="/dashboard/ask" className="px-4 py-2 bg-white border border-slate-200 rounded-md text-sm font-medium text-slate-800 hover:bg-slate-100">
+            Ask the Repo &rarr;
+          </Link>
+        </div>
+        {searchParams?.message && (
+          <p className="mt-4 text-sm text-green-700 bg-green-50 border border-green-100 p-3 rounded-md">{searchParams.message}</p>
+        )}
+        {searchParams?.error && (
+          <p className="mt-4 text-sm text-red-700 bg-red-50 border border-red-100 p-3 rounded-md">{searchParams.error}</p>
+        )}
       </header>
 
       <main className="max-w-4xl mx-auto space-y-8">
+
+        <section className="grid grid-cols-3 gap-3">
+          <div className="bg-white p-4 rounded-xl border border-slate-200">
+            <p className="text-xs uppercase tracking-wide text-slate-500">AI requests (30 days)</p>
+            <p className="text-2xl font-bold text-slate-900 mt-1">{usage.total}</p>
+          </div>
+          <div className="bg-white p-4 rounded-xl border border-slate-200">
+            <p className="text-xs uppercase tracking-wide text-slate-500">Served from cache</p>
+            <p className="text-2xl font-bold text-emerald-600 mt-1">
+              {usage.total ? Math.round((usage.cached / usage.total) * 100) : 0}%
+            </p>
+          </div>
+          <div className="bg-white p-4 rounded-xl border border-slate-200">
+            <p className="text-xs uppercase tracking-wide text-slate-500">Tokens used</p>
+            <p className="text-2xl font-bold text-slate-900 mt-1">{usage.tokens.toLocaleString('en-IN')}</p>
+          </div>
+        </section>
 
         {/* Manager Section */}
         {role === 'manager' && (
@@ -134,12 +171,38 @@ export default async function DashboardPage() {
                     You need to log in with GitHub to view and assign your private repositories.
                   </p>
                 )}
+                {githubError && (
+                  <p className="text-sm text-red-600 bg-red-50 p-2 rounded">
+                    {githubError}
+                  </p>
+                )}
 
                 <button type="submit" className="bg-slate-900 text-white px-4 py-2 rounded-md hover:bg-slate-800 transition-colors w-fit">
                   Invite User & Assign Repos
                 </button>
               </form>
             </div>
+
+            {githubRepos.length > 0 && (
+              <div className="bg-slate-50 p-4 rounded-lg border border-slate-100 mt-4">
+                <h3 className="font-semibold mb-2">Track a Repository</h3>
+                <p className="text-sm text-slate-600 mb-4">
+                  Adds the repo to your Commit Timeline, sets up the GitHub webhook, and imports the latest 10 commits.
+                </p>
+                <form className="flex flex-col sm:flex-row gap-2" action="/api/repos/track" method="POST">
+                  <select name="repo" className="px-3 py-2 border rounded-md bg-white flex-1" required>
+                    {githubRepos.map(repo => (
+                      <option key={repo.id} value={JSON.stringify(repo)}>
+                        {repo.name}{repo.private ? ' (private)' : ''}
+                      </option>
+                    ))}
+                  </select>
+                  <button type="submit" className="bg-slate-900 text-white px-4 py-2 rounded-md hover:bg-slate-800 transition-colors">
+                    Track Repository
+                  </button>
+                </form>
+              </div>
+            )}
           </section>
         )}
 

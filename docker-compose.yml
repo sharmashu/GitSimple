@@ -1,0 +1,38 @@
+# GitSimple with your own Supabase project and your own LLM key.
+#
+#   1. cp .env.example .env   and fill it in
+#   2. Run supabase/schema.sql once in your Supabase SQL Editor
+#   3. docker compose up --build -d
+#   4. Open http://localhost:3000   (health: http://localhost:3000/api/health)
+
+services:
+  app:
+    build:
+      context: .
+      args:
+        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY}
+        NEXT_PUBLIC_SITE_URL: ${SITE_URL:-http://localhost:3000}
+    image: gitsimple:latest
+    env_file: .env
+    ports:
+      - "${PORT:-3000}:3000"
+    restart: unless-stopped
+    # Lets the app reach a model server on your machine (e.g. Ollama at http://host.docker.internal:11434/v1)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # Optional: run a local LLM instead of a paid API.
+  #   docker compose --profile local-llm up --build -d
+  #   then: docker compose exec ollama ollama pull llama3.1 && docker compose exec ollama ollama pull nomic-embed-text
+  #   and set LLM_PROVIDER=openai, LLM_BASE_URL=http://ollama:11434/v1, LLM_MODEL=llama3.1,
+  #           EMBEDDING_PROVIDER=openai, EMBEDDING_BASE_URL=http://ollama:11434/v1, EMBEDDING_MODEL=nomic-embed-text
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["local-llm"]
+    volumes:
+      - ollama:/root/.ollama
+    restart: unless-stopped
+
+volumes:
+  ollama:

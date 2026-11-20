@@ -2,56 +2,50 @@
 
 import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
-import { headers } from 'next/headers'
 import { createClient } from '@/utils/supabase/server'
+import { siteUrl, safeNext } from '@/lib/site'
 
 export async function login(formData: FormData) {
   const supabase = createClient()
+  const next = safeNext(formData.get('next'))
 
-  const data = {
+  const { error } = await supabase.auth.signInWithPassword({
     email: formData.get('email') as string,
     password: formData.get('password') as string,
-  }
-
-  const { error } = await supabase.auth.signInWithPassword(data)
+  })
 
   if (error) {
-    return redirect(`/login?message=${encodeURIComponent(error.message)}`)
+    return redirect(`/login?message=${encodeURIComponent(error.message)}&next=${encodeURIComponent(next)}`)
   }
 
   revalidatePath('/', 'layout')
-  redirect('/dashboard')
+  redirect(next)
 }
 
-export async function signInWithGithub() {
+function callbackUrl(formData?: FormData) {
+  const next = safeNext(formData?.get('next'))
+  return `${siteUrl()}/auth/callback?next=${encodeURIComponent(next)}`
+}
+
+export async function signInWithGithub(formData?: FormData) {
   const supabase = createClient()
-  const origin = headers().get('origin')
-  
   const { data, error } = await supabase.auth.signInWithOAuth({
     provider: 'github',
     options: {
-      redirectTo: `${origin}/auth/callback`,
-      scopes: 'repo' // Request access to private repositories
+      redirectTo: callbackUrl(formData),
+      scopes: 'repo read:user user:email', // repo = read private repositories you choose to open
     },
   })
-
-  if (data.url) {
-    redirect(data.url)
-  }
+  if (error) redirect(`/login?message=${encodeURIComponent(error.message)}`)
+  if (data.url) redirect(data.url)
 }
 
-export async function signInWithGoogle() {
+export async function signInWithGoogle(formData?: FormData) {
   const supabase = createClient()
-  const origin = headers().get('origin')
-  
   const { data, error } = await supabase.auth.signInWithOAuth({
     provider: 'google',
-    options: {
-      redirectTo: `${origin}/auth/callback`,
-    },
+    options: { redirectTo: callbackUrl(formData) },
   })
-
-  if (data.url) {
-    redirect(data.url)
-  }
+  if (error) redirect(`/login?message=${encodeURIComponent(error.message)}`)
+  if (data.url) redirect(data.url)
 }

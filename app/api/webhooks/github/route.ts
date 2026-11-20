@@ -1,137 +1,80 @@
 import { NextResponse } from 'next/server'
 import crypto from 'crypto'
+import { waitUntil } from '@vercel/functions'
 import { createAdminClient } from '@/utils/supabase/server'
-import { generateStructuredCommitAnalysis } from '@/lib/AI Summarizer'
+import { getTokenForTrackedRepo } from '@/lib/github'
+import { processCommits, enqueueBackground } from '@/lib/commitProcessor'
 
-// Helper to verify GitHub webhook signature
-function verifySignature(reqBody: string, signature: string | null, secret: string | undefined): boolean {
-  if (!signature || !secret) return false;
-  const hmac = crypto.createHmac('sha256', secret);
-  const digest = 'sha256=' + hmac.update(reqBody).digest('hex');
-  return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(digest));
+// Allow background processing to keep running after we reply to GitHub (Vercel)
+export const maxDuration = 300;
+
+// Verify the GitHub webhook signature in constant time.
+function verifySignature(reqBody: string, signature: string | null, secret: string): boolean {
+  if (!signature) return false;
+  const digest = 'sha256=' + crypto.createHmac('sha256', secret).update(reqBody).digest('hex');
+  const a = Buffer.from(signature);
+  const b = Buffer.from(digest);
+  // timingSafeEqual throws if lengths differ, so check first
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
 export async function POST(request: Request) {
+  const secret = process.env.GITHUB_WEBHOOK_SECRET;
+  if (!secret) {
+    // Never accept unsigned webhooks: anyone could post fake commits
+    console.error('GITHUB_WEBHOOK_SECRET is not set; refusing webhook.');
+    return NextResponse.json({ error: 'Webhook secret not configured' }, { status: 500 });
+  }
+
+  const rawBody = await request.text();
+  if (!verifySignature(rawBody, request.headers.get('x-hub-signature-256'), secret)) {
+    return NextResponse.json({ error: 'Unauthorized: Invalid signature' }, { status: 401 });
+  }
+
+  let payload: any;
   try {
-    const rawBody = await request.text();
-    const signature = request.headers.get('x-hub-signature-256');
-    const secret = process.env.GITHUB_WEBHOOK_SECRET;
+    payload = JSON.parse(rawBody);
+  } catch {
+    return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
+  }
 
-    if (secret && !verifySignature(rawBody, signature, secret)) {
-      return NextResponse.json({ error: 'Unauthorized: Invalid signature' }, { status: 401 });
-    }
+  const eventType = request.headers.get('x-github-event');
+  if (eventType === 'ping') {
+    return NextResponse.json({ message: 'pong' });
+  }
+  if (eventType !== 'push') {
+    return NextResponse.json({ message: 'Ignored non-push event' });
+  }
 
-    const payload = JSON.parse(rawBody);
-    const eventType = request.headers.get('x-github-event');
+  const repoFullName: string | undefined = payload.repository?.full_name;
+  const branch: string = (payload.ref || '').replace('refs/heads/', '') || 'main';
+  const commits: any[] = Array.isArray(payload.commits) ? payload.commits : [];
 
-    if (eventType !== 'push') {
-      return NextResponse.json({ message: 'Ignored non-push event' });
-    }
+  if (!repoFullName || payload.deleted || commits.length === 0) {
+    return NextResponse.json({ message: 'No commits in push event' });
+  }
 
-    const repoFullName = payload.repository.full_name;
-    const branch = payload.ref.replace('refs/heads/', '');
-    const commits = payload.commits;
-
-    if (!commits || commits.length === 0) {
-      return NextResponse.json({ message: 'No commits in push event' });
-    }
-
+  try {
     const adminSupabase = createAdminClient();
-
-    // Find the repository in our DB
     const { data: repository } = await adminSupabase
       .from('repositories')
-      .select('id, private')
+      .select('id')
       .eq('name', repoFullName)
-      .single();
+      .maybeSingle();
 
     if (!repository) {
-      console.log(`Repository ${repoFullName} not tracked.`);
       return NextResponse.json({ message: 'Repository not tracked' });
     }
 
-    // Try to find a github_token from users connected to this repo
-    let githubToken: string | null = null;
-    const { data: userRepoLinks } = await adminSupabase
-      .from('user_repositories')
-      .select('user_id')
-      .eq('repository_id', repository.id)
-      .limit(10);
+    // Reply to GitHub right away (it gives up after 10s) and do the AI work in the background.
+    const shas = commits.slice(0, 50).map((c) => c.id).filter(Boolean);
+    const work = (async () => {
+      const token = await getTokenForTrackedRepo(repository.id);
+      await enqueueBackground(() => processCommits(repository.id, repoFullName, branch, shas, token));
+    })().catch((e) => console.error('Background commit processing failed:', e));
+    waitUntil(work);
 
-    if (userRepoLinks && userRepoLinks.length > 0) {
-      const userIds = userRepoLinks.map((r: any) => r.user_id);
-      const { data: profiles } = await adminSupabase
-        .from('profiles')
-        .select('github_token')
-        .in('id', userIds)
-        .not('github_token', 'is', null)
-        .limit(1);
-      
-      if (profiles && profiles.length > 0) {
-        githubToken = profiles[0].github_token;
-      }
-    }
-
-    // Process each commit
-    for (const commit of commits) {
-      // 1. Fetch the diff
-      const headers: Record<string, string> = {
-        'Accept': 'application/vnd.github.v3.diff'
-      };
-      if (githubToken) {
-        headers['Authorization'] = `Bearer ${githubToken}`;
-      }
-
-      const diffResponse = await fetch(`https://api.github.com/repos/${repoFullName}/commits/${commit.id}`, {
-        headers
-      });
-
-      let diffText = '';
-      if (diffResponse.ok) {
-        diffText = await diffResponse.text();
-      } else {
-        console.warn(`Could not fetch diff for ${commit.id}: ${diffResponse.statusText}`);
-        continue; // Skip if we can't get diff (e.g. private repo and no token)
-      }
-
-      // 2. Generate AI structured analysis
-      const analysis = await generateStructuredCommitAnalysis(diffText);
-
-      // 3. Insert into commits table
-      const commitData = {
-        repo_id: repository.id,
-        commit_sha: commit.id,
-        short_sha: commit.id.substring(0, 7),
-        branch: branch,
-        author_name: commit.author.name,
-        author_email: commit.author.email,
-        author_avatar: '', // Webhook payload usually lacks avatar, could fetch from github api
-        message: commit.message,
-        title: commit.message.split('\n')[0],
-        executive_summary: analysis.executive_summary,
-        architectural_impact: analysis.architectural_impact,
-        breaking_changes: analysis.breaking_changes,
-        affected_domains: analysis.affected_domains,
-        impact_level: ['Breaking', 'Feature', 'Refactor', 'Security', 'Performance', 'Fix'].includes(analysis.impact_level) ? analysis.impact_level : 'Fix',
-        stats: {
-          files_changed: commit.added.length + commit.removed.length + commit.modified.length,
-          additions: 0, // Git push event doesn't have raw line additions without tree diff
-          deletions: 0
-        },
-        files: [...commit.added, ...commit.removed, ...commit.modified],
-        committed_at: commit.timestamp
-      };
-
-      const { error: insertError } = await adminSupabase
-        .from('commits')
-        .insert(commitData);
-
-      if (insertError && insertError.code !== '23505') { // Ignore unique violation if commit already exists
-        console.error("Failed to insert commit:", insertError);
-      }
-    }
-
-    return NextResponse.json({ success: true, message: `Processed ${commits.length} commits` });
+    return NextResponse.json({ accepted: true, message: `Processing ${shas.length} commits` }, { status: 202 });
   } catch (error: any) {
     console.error('Webhook error:', error);
     return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });

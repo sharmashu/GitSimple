@@ -1,64 +1,64 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getGithubTokenForRepo } from "@/lib/github";
+import { getRequester } from "@/lib/auth";
+import { resolveRepo } from "@/lib/repoAccess";
+import { listCommits, CommitListItem } from "@/lib/github";
+import { createAdminClient } from "@/utils/supabase/server";
+import { errorResponse } from "@/lib/errors";
+import { MemoryCache } from "@/lib/memoryCache";
 
+// Commit lists are cached for 60s (public repos are shared between all visitors)
+const listCache = new MemoryCache<{ commits: CommitListItem[]; hasMore: boolean }>(500, 60_000);
+
+/** GET /api/commits?repo=<github url>&page=1 — works without login for public repos. */
 export async function GET(req: NextRequest) {
-  const { searchParams } = new URL(req.url);
-  const repoUrl = searchParams.get("repo");
-
-  if (!repoUrl || !repoUrl.includes("github.com/")) {
-    return NextResponse.json({ error: "Invalid GitHub repository URL." }, { status: 400 });
-  }
-
   try {
-    const urlObj = new URL(repoUrl);
-    const pathParts = urlObj.pathname.split("/").filter(Boolean);
+    const { searchParams } = new URL(req.url);
+    const page = Math.min(Math.max(parseInt(searchParams.get("page") || "1", 10) || 1, 1), 50);
+    const requester = await getRequester(req);
+    const { repo, token } = await resolveRepo({ repoUrl: searchParams.get("repo") }, requester);
 
-    if (pathParts.length < 2) {
-      return NextResponse.json({ error: "Invalid repository format. Should be github.com/owner/repo" }, { status: 400 });
+    const cacheId = `${repo.id}|${page}|${repo.private ? requester.key : "public"}`;
+    let list = listCache.get(cacheId);
+    if (!list) {
+      list = await listCommits(repo.name, token, page, 15);
+      listCache.set(cacheId, list);
     }
 
-    const owner = pathParts[0];
-    const repo = pathParts[1];
-
-    // Check for authenticated user and get the appropriate GitHub token
-    const githubToken = await getGithubTokenForRepo(repoUrl);
-
-    // Fetch the last 15 commits to avoid massive payloads
-    const apiUrl = `https://api.github.com/repos/${owner}/${repo}/commits?per_page=15`;
-
-    const headers: Record<string, string> = {
-      "Accept": "application/vnd.github.v3+json",
-      "User-Agent": "GitSimple-App"
-    };
-
-    if (githubToken) {
-      headers["Authorization"] = `Bearer ${githubToken}`;
+    // Attach analyses that already exist, so their summaries show instantly (no AI call)
+    const shas = list.commits.map((c) => c.sha);
+    const analysed = new Map<string, any>();
+    if (shas.length) {
+      const { data } = await createAdminClient()
+        .from("commits")
+        .select("commit_sha, brief_summary, executive_summary, impact_level, breaking_changes, affected_domains, stats, detailed_report")
+        .eq("repo_id", repo.id)
+        .in("commit_sha", shas);
+      (data || []).forEach((c: any) => analysed.set(c.commit_sha, c));
     }
 
-    const response = await fetch(apiUrl, { headers });
-
-    if (!response.ok) {
-      if (response.status === 404) return NextResponse.json({ error: "Repository not found or is private." }, { status: 404 });
-      if (response.status === 403) return NextResponse.json({ error: "GitHub API rate limit exceeded." }, { status: 403 });
-      throw new Error(`GitHub API returned ${response.status}`);
-    }
-
-    const commitsData = await response.json();
-
-    const commits = commitsData.map((c: any) => ({
-      sha: c.sha,
-      shortSha: c.sha.substring(0, 7),
-      message: c.commit.message,
-      author: c.commit.author.name,
-      date: c.commit.author.date,
-      url: c.html_url,
-      diffUrl: `${c.html_url}.diff`
-    }));
-
-    return NextResponse.json({ commits }, { status: 200 });
-
-  } catch (error: any) {
-    console.error("Fetch Commits Error:", error);
-    return NextResponse.json({ error: "Failed to fetch commits." }, { status: 500 });
+    return NextResponse.json({
+      repo: { id: repo.id, name: repo.name, url: repo.url, private: repo.private, defaultBranch: repo.default_branch },
+      page,
+      hasMore: list.hasMore,
+      commits: list.commits.map((c) => {
+        const a = analysed.get(c.sha);
+        return {
+          ...c,
+          analysis: a
+            ? {
+                brief: a.brief_summary || a.executive_summary,
+                impactLevel: a.impact_level,
+                breakingChanges: a.breaking_changes || [],
+                domains: a.affected_domains || [],
+                stats: a.stats,
+                hasReport: !!a.detailed_report,
+              }
+            : null,
+        };
+      }),
+    }, { headers: { "Cache-Control": "private, max-age=30" } });
+  } catch (e: any) {
+    if (e?.status === 429 && !(e as any).extra) return NextResponse.json({ error: e.message }, { status: 429 });
+    return errorResponse(e, "Failed to fetch commits.");
   }
 }
